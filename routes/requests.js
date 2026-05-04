@@ -37,11 +37,14 @@ router.post('/', authenticateToken, requireRole(['receiver']), async (req, res) 
       requested_at: new Date()
     });
 
+    // Get receiver name from database
+    const receiver = await findOne('users', { _id: toObjectId(receiverId) });
+
     // Create notification for donor
     await insertOne('notifications', {
       user_id: donation.donor_id,
       title: 'New Donation Request',
-      message: `${req.user.name} has requested your donation: "${donation.title}"`,
+      message: `${receiver?.name || 'A user'} has requested your donation: "${donation.title}"`,
       type: 'request',
       is_read: false,
       created_at: new Date()
@@ -65,19 +68,26 @@ router.get('/my-requests', authenticateToken, requireRole(['receiver']), async (
 
     // Enrich requests with donation and donor info
     const enrichedRequests = await Promise.all(requests.map(async (request) => {
-      const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
-      const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
-      return {
-        ...request,
-        title: donation?.title,
-        food_type: donation?.food_type,
-        quantity: donation?.quantity,
-        pickup_location: donation?.pickup_location,
-        donation_status: donation?.status,
-        donor_name: donor?.name,
-        donor_phone: donor?.phone
-      };
-    }));
+      try {
+        const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
+        if (!donation) return null; // Skip if donation not found
+
+        const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
+        return {
+          ...request,
+          title: donation?.title,
+          food_type: donation?.food_type,
+          quantity: donation?.quantity,
+          pickup_location: donation?.pickup_location,
+          donation_status: donation?.status,
+          donor_name: donor?.name,
+          donor_phone: donor?.phone
+        };
+      } catch (err) {
+        console.error('Error enriching request:', err);
+        return null;
+      }
+    })).then(results => results.filter(r => r !== null));
 
     res.json(enrichedRequests);
 
@@ -91,24 +101,34 @@ router.get('/my-requests', authenticateToken, requireRole(['receiver']), async (
 router.get('/for-my-donations', authenticateToken, requireRole(['donor']), async (req, res) => {
   try {
     const donations = await find('donations', { donor_id: req.userId });
+    if (donations.length === 0) {
+      return res.json([]; // No donations, return empty
+    }
     const donationIds = donations.map(d => d._id.toString());
 
     const requests = await find('requests', { donation_id: { $in: donationIds } }, { sort: { requested_at: -1 } });
 
     // Enrich requests with donation and receiver info
     const enrichedRequests = await Promise.all(requests.map(async (request) => {
-      const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
-      const receiver = await findOne('users', { _id: toObjectId(request.receiver_id) });
-      return {
-        ...request,
-        title: donation?.title,
-        food_type: donation?.food_type,
-        quantity: donation?.quantity,
-        receiver_name: receiver?.name,
-        receiver_phone: receiver?.phone,
-        receiver_email: receiver?.email
-      };
-    }));
+      try {
+        const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
+        if (!donation) return null; // Skip if donation not found
+
+        const receiver = await findOne('users', { _id: toObjectId(request.receiver_id) });
+        return {
+          ...request,
+          title: donation?.title,
+          food_type: donation?.food_type,
+          quantity: donation?.quantity,
+          receiver_name: receiver?.name,
+          receiver_phone: receiver?.phone,
+          receiver_email: receiver?.email
+        };
+      } catch (err) {
+        console.error('Error enriching request:', err);
+        return null;
+      }
+    })).then(results => results.filter(r => r !== null));
 
     res.json(enrichedRequests);
 
