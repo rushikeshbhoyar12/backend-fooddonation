@@ -13,13 +13,14 @@ const authenticateToken = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
     // Get user from database
-    const users = await executeQuery('SELECT * FROM users WHERE id = ?', [decoded.userId]);
-    
-    if (users.length === 0) {
-      return res.status(401).json({ message: 'User not found' });
-    }
+   const user = await User.findById(decoded.userId);
 
-    req.user = users[0];
+if (!user) {
+  return res.status(401).json({ message: 'User not found' });
+}
+
+req.user = user;
+next();
     next();
   } catch (error) {
     return res.status(403).json({ message: 'Invalid or expired token' });
