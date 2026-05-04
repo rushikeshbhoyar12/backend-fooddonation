@@ -131,7 +131,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { name, phone, address, city, state, zipCode } = req.body;
-    const userId = toObjectId(req.user.id);
+    const userId = toObjectId(req.userId);
 
     await updateOne('users',
       { _id: userId },

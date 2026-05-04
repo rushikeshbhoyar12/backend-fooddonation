@@ -8,7 +8,7 @@ const router = express.Router();
 router.post('/', authenticateToken, requireRole(['receiver']), async (req, res) => {
   try {
     const { donationId, message } = req.body;
-    const receiverId = req.user.id;
+    const receiverId = req.userId;
 
     if (!donationId) {
       return res.status(400).json({ message: 'Donation ID is required' });
@@ -61,7 +61,7 @@ router.post('/', authenticateToken, requireRole(['receiver']), async (req, res) 
 // Get user's requests (receivers)
 router.get('/my-requests', authenticateToken, requireRole(['receiver']), async (req, res) => {
   try {
-    const requests = await find('requests', { receiver_id: req.user.id }, { sort: { requested_at: -1 } });
+    const requests = await find('requests', { receiver_id: req.userId }, { sort: { requested_at: -1 } });
 
     // Enrich requests with donation and donor info
     const enrichedRequests = await Promise.all(requests.map(async (request) => {
@@ -90,7 +90,7 @@ router.get('/my-requests', authenticateToken, requireRole(['receiver']), async (
 // Get requests for donor's donations
 router.get('/for-my-donations', authenticateToken, requireRole(['donor']), async (req, res) => {
   try {
-    const donations = await find('donations', { donor_id: req.user.id });
+    const donations = await find('donations', { donor_id: req.userId });
     const donationIds = donations.map(d => d._id.toString());
 
     const requests = await find('requests', { donation_id: { $in: donationIds } }, { sort: { requested_at: -1 } });
@@ -138,7 +138,7 @@ router.put('/:id/status', authenticateToken, requireRole(['donor']), async (req,
     const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
     const receiver = await findOne('users', { _id: toObjectId(request.receiver_id) });
 
-    if (!donation || donation.donor_id !== req.user.id) {
+    if (!donation || donation.donor_id !== req.userId) {
       return res.status(404).json({ message: 'Request not found or not authorized' });
     }
 
@@ -216,7 +216,7 @@ router.get('/donation/:donationId', authenticateToken, requireRole(['donor']), a
     const donationId = req.params.donationId;
 
     // Verify donation belongs to the donor
-    const donation = await findOne('donations', { _id: toObjectId(donationId), donor_id: req.user.id });
+    const donation = await findOne('donations', { _id: toObjectId(donationId), donor_id: req.userId });
 
     if (!donation) {
       return res.status(404).json({ message: 'Donation not found or not authorized' });
@@ -252,7 +252,7 @@ router.put('/:id/complete', authenticateToken, requireRole(['receiver']), async 
     const requestId = req.params.id;
 
     // Check if request exists and belongs to the receiver and is accepted
-    const request = await findOne('requests', { _id: toObjectId(requestId), receiver_id: req.user.id, status: 'accepted' });
+    const request = await findOne('requests', { _id: toObjectId(requestId), receiver_id: req.userId, status: 'accepted' });
 
     if (!request) {
       return res.status(404).json({ message: 'Request not found, not authorized, or not accepted' });

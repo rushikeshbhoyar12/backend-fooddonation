@@ -1,5 +1,5 @@
 const express = require('express');
-const { find, findOne, insertOne, updateOne, deleteOne, toObjectId } = require('../config/database');
+const { find, findOne, insertOne, updateOne, deleteOne, toObjectId, countDocuments } = require('../config/database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -43,6 +43,30 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Get donations by donor (authenticated donor) - MUST BE BEFORE /:id route
+router.get('/donor/my-donations', authenticateToken, requireRole(['donor']), async (req, res) => {
+  try {
+    const donations = await find('donations', { donor_id: req.userId }, { sort: { created_at: -1 } });
+
+    // Add request counts
+    const enrichedDonations = await Promise.all(donations.map(async (donation) => {
+      const request_count = await countDocuments('requests', { donation_id: donation._id.toString() });
+      const pending_requests = await countDocuments('requests', { donation_id: donation._id.toString(), status: 'pending' });
+      return {
+        ...donation,
+        request_count,
+        pending_requests
+      };
+    }));
+
+    res.json({ donations: enrichedDonations });
+
+  } catch (error) {
+    console.error('Error fetching donor donations:', error);
+    res.status(500).json({ message: 'Server error fetching donations' });
+  }
+});
+
 // Get donation by ID
 router.get('/:id', async (req, res) => {
   try {
@@ -73,14 +97,13 @@ router.get('/:id', async (req, res) => {
 router.post('/', authenticateToken, requireRole(['donor']), async (req, res) => {
   try {
     const { title, description, food_type, quantity, expiry_date, pickup_location, contact_info, image_url } = req.body;
-    const donorId = req.user.id;
 
     if (!title || !food_type || !quantity || !pickup_location || !contact_info) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
     const result = await insertOne('donations', {
-      donor_id: req.user.id,
+      donor_id: req.userId,
       title,
       description: description || null,
       food_type,
@@ -110,17 +133,16 @@ router.put('/:id', authenticateToken, requireRole(['donor']), async (req, res) =
   try {
     const { title, description, food_type, quantity, expiry_date, pickup_location, contact_info, status, image_url } = req.body;
     const donationId = toObjectId(req.params.id);
-    const donorId = req.user.id;
 
     // Check if donation belongs to the donor
-    const donation = await findOne('donations', { _id: donationId, donor_id: donorId });
+    const donation = await findOne('donations', { _id: donationId, donor_id: req.userId });
 
     if (!donation) {
       return res.status(404).json({ message: 'Donation not found or not authorized' });
     }
 
     await updateOne('donations',
-      { _id: donationId, donor_id: donorId },
+      { _id: donationId, donor_id: req.userId },
       {
         title,
         description,
@@ -147,47 +169,21 @@ router.put('/:id', authenticateToken, requireRole(['donor']), async (req, res) =
 router.delete('/:id', authenticateToken, requireRole(['donor']), async (req, res) => {
   try {
     const donationId = toObjectId(req.params.id);
-    const donorId = req.user.id;
 
     // Check if donation belongs to the donor
-    const donation = await findOne('donations', { _id: donationId, donor_id: donorId });
+    const donation = await findOne('donations', { _id: donationId, donor_id: req.userId });
 
     if (!donation) {
       return res.status(404).json({ message: 'Donation not found or not authorized' });
     }
 
-    await deleteOne('donations', { _id: donationId, donor_id: donorId });
+    await deleteOne('donations', { _id: donationId, donor_id: req.userId });
 
     res.json({ message: 'Donation deleted successfully' });
 
   } catch (error) {
     console.error('Error deleting donation:', error);
     res.status(500).json({ message: 'Server error deleting donation' });
-  }
-});
-
-// Get donations by donor (authenticated donor)
-router.get('/donor/my-donations', authenticateToken, requireRole(['donor']), async (req, res) => {
-  try {
-    const donations = await find('donations', { donor_id: req.user.id }, { sort: { created_at: -1 } });
-
-    // Add request counts
-    const enrichedDonations = await Promise.all(donations.map(async (donation) => {
-      const { find: findRequests, countDocuments } = require('../config/database');
-      const request_count = await countDocuments('requests', { donation_id: donation._id.toString() });
-      const pending_requests = await countDocuments('requests', { donation_id: donation._id.toString(), status: 'pending' });
-      return {
-        ...donation,
-        request_count,
-        pending_requests
-      };
-    }));
-
-    res.json({ donations: enrichedDonations });
-
-  } catch (error) {
-    console.error('Error fetching donor donations:', error);
-    res.status(500).json({ message: 'Server error fetching donations' });
   }
 });
 

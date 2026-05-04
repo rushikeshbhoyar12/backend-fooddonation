@@ -7,7 +7,7 @@ const router = express.Router();
 // Get user notifications
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const notifications = await find('notifications', { user_id: req.user.id }, { sort: { created_at: -1 } });
+    const notifications = await find('notifications', { user_id: req.userId }, { sort: { created_at: -1 } });
 
     res.json(notifications);
 
@@ -23,7 +23,7 @@ router.put('/:id/read', authenticateToken, async (req, res) => {
     const notificationId = req.params.id;
 
     // Verify notification belongs to user
-    const notification = await findOne('notifications', { _id: toObjectId(notificationId), user_id: req.user.id });
+    const notification = await findOne('notifications', { _id: toObjectId(notificationId), user_id: req.userId });
 
     if (!notification) {
       return res.status(404).json({ message: 'Notification not found' });
@@ -42,7 +42,7 @@ router.put('/:id/read', authenticateToken, async (req, res) => {
 // Mark all notifications as read
 router.put('/read-all', authenticateToken, async (req, res) => {
   try {
-    await updateOne('notifications', { user_id: req.user.id }, { is_read: true });
+    await updateOne('notifications', { user_id: req.userId }, { is_read: true });
 
     res.json({ message: 'All notifications marked as read' });
 
@@ -55,7 +55,7 @@ router.put('/read-all', authenticateToken, async (req, res) => {
 // Get unread notification count
 router.get('/unread-count', authenticateToken, async (req, res) => {
   try {
-    const count = await countDocuments('notifications', { user_id: req.user.id, is_read: false });
+    const count = await countDocuments('notifications', { user_id: req.userId, is_read: false });
 
     res.json({ count });
 
