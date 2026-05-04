@@ -102,7 +102,7 @@ router.get('/for-my-donations', authenticateToken, requireRole(['donor']), async
   try {
     const donations = await find('donations', { donor_id: req.userId });
     if (donations.length === 0) {
-      return res.json([]; // No donations, return empty
+      return res.json([]);
     }
     const donationIds = donations.map(d => d._id.toString());
 
