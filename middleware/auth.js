@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { executeQuery } = require('../config/database');
+const { findOne, toObjectId } = require('../config/database');
 
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -11,16 +11,16 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Get user from database
-   const user = await User.findById(decoded.userId);
 
-if (!user) {
-  return res.status(401).json({ message: 'User not found' });
-}
+    // Get user from MongoDB
+    const user = await findOne('users', { _id: toObjectId(decoded.userId) });
 
-req.user = user;
-next();
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    req.user = user;
+    req.userId = user._id.toString();
     next();
   } catch (error) {
     return res.status(403).json({ message: 'Invalid or expired token' });
