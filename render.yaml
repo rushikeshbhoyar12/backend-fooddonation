@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: backend-fooddonation
+    runtime: node
+    plan: free
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - fromGroup: fooddonation_production
