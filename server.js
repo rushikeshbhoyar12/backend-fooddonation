@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const db = require('./config/database');
 const dotenv = require('dotenv');
+const { connect } = require('./config/database');
 
 // Load environment variables
 dotenv.config();
@@ -37,6 +37,20 @@ app.use('*', (req, res) => {
   res.status(404).json({ message: 'API endpoint not found' });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Food Donation System API running on port ${PORT}`);
-});
+// Start server with MongoDB connection
+async function startServer() {
+  try {
+    // Initialize MongoDB connection
+    await connect();
+
+    app.listen(PORT, () => {
+      console.log(`🚀 Food Donation System API running on port ${PORT}`);
+      console.log(`📦 MongoDB URI: ${process.env.MONGODB_URI || 'mongodb://localhost:27017/food_donation_db'}`);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();

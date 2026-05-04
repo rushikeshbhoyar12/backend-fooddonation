@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { executeQuery } = require('../config/database');
+const { findOne, insertOne, updateOne, toObjectId } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
@@ -17,9 +17,9 @@ router.post('/register', async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUsers = await executeQuery('SELECT * FROM users WHERE email = ?', [email]);
-    
-    if (existingUsers.length > 0) {
+    const existingUser = await findOne('users', { email });
+
+    if (existingUser) {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
@@ -27,14 +27,22 @@ router.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Insert user
-    const result = await executeQuery(`
-      INSERT INTO users (name, email, password, role, phone, address, city, state, zip_code)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [name, email, hashedPassword, role || 'receiver', phone || null, address || null, city || null, state || null, zipCode || null]);
+    const result = await insertOne('users', {
+      name,
+      email,
+      password: hashedPassword,
+      role: role || 'receiver',
+      phone: phone || null,
+      address: address || null,
+      city: city || null,
+      state: state || null,
+      zip_code: zipCode || null,
+      created_at: new Date()
+    });
 
     // Create token
     const token = jwt.sign(
-      { userId: result.insertId, email },
+      { userId: result.insertedId.toString(), email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -43,7 +51,7 @@ router.post('/register', async (req, res) => {
       message: 'User created successfully',
       token,
       user: {
-        id: result.insertId,
+        id: result.insertedId.toString(),
         name,
         email,
         role: role || 'receiver'
@@ -66,24 +74,22 @@ router.post('/login', async (req, res) => {
     }
 
     // Find user
-    const users = await executeQuery('SELECT * FROM users WHERE email = ?', [email]);
-    
-    if (users.length === 0) {
+    const user = await findOne('users', { email });
+
+    if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    const user = users[0];
-
     // Check password
     const isValidPassword = await bcrypt.compare(password, user.password);
-    
+
     if (!isValidPassword) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     // Create token
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { userId: user._id.toString(), email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -92,7 +98,7 @@ router.post('/login', async (req, res) => {
       message: 'Login successful',
       token,
       user: {
-        id: user.id,
+        id: user._id.toString(),
         name: user.name,
         email: user.email,
         role: user.role,
@@ -125,13 +131,19 @@ router.get('/profile', authenticateToken, async (req, res) => {
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { name, phone, address, city, state, zipCode } = req.body;
-    const userId = req.user.id;
+    const userId = toObjectId(req.user.id);
 
-    await executeQuery(`
-      UPDATE users 
-      SET name = ?, phone = ?, address = ?, city = ?, state = ?, zip_code = ?
-      WHERE id = ?
-    `, [name, phone || null, address || null, city || null, state || null, zipCode || null, userId]);
+    await updateOne('users',
+      { _id: userId },
+      {
+        name,
+        phone: phone || null,
+        address: address || null,
+        city: city || null,
+        state: state || null,
+        zip_code: zipCode || null
+      }
+    );
 
     res.json({ message: 'Profile updated successfully' });
 

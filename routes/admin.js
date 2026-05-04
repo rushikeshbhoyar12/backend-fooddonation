@@ -1,5 +1,5 @@
 const express = require('express');
-const { executeQuery } = require('../config/database');
+const { find, findOne, updateOne, deleteOne, countDocuments, toObjectId } = require('../config/database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -10,56 +10,35 @@ router.get('/stats', authenticateToken, requireRole(['admin']), async (req, res)
     const stats = {};
 
     // Total users by role
-    const userStats = await executeQuery(`
-      SELECT role, COUNT(*) as count 
-      FROM users 
-      GROUP BY role
-    `);
-    
-    stats.users = userStats.reduce((acc, stat) => {
-      acc[stat.role] = stat.count;
-      return acc;
-    }, {});
-    
-    stats.users.total = userStats.reduce((sum, stat) => sum + stat.count, 0);
+    const allUsers = await find('users', {});
+    stats.users = {};
+    allUsers.forEach(user => {
+      stats.users[user.role] = (stats.users[user.role] || 0) + 1;
+    });
+    stats.users.total = allUsers.length;
 
     // Total donations by status
-    const donationStats = await executeQuery(`
-      SELECT status, COUNT(*) as count 
-      FROM donations 
-      GROUP BY status
-    `);
-    
-    stats.donations = donationStats.reduce((acc, stat) => {
-      acc[stat.status] = stat.count;
-      return acc;
-    }, {});
-    
-    stats.donations.total = donationStats.reduce((sum, stat) => sum + stat.count, 0);
+    const allDonations = await find('donations', {});
+    stats.donations = {};
+    allDonations.forEach(donation => {
+      stats.donations[donation.status] = (stats.donations[donation.status] || 0) + 1;
+    });
+    stats.donations.total = allDonations.length;
 
     // Total requests by status
-    const requestStats = await executeQuery(`
-      SELECT status, COUNT(*) as count 
-      FROM requests 
-      GROUP BY status
-    `);
-    
-    stats.requests = requestStats.reduce((acc, stat) => {
-      acc[stat.status] = stat.count;
-      return acc;
-    }, {});
-    
-    stats.requests.total = requestStats.reduce((sum, stat) => sum + stat.count, 0);
+    const allRequests = await find('requests', {});
+    stats.requests = {};
+    allRequests.forEach(request => {
+      stats.requests[request.status] = (stats.requests[request.status] || 0) + 1;
+    });
+    stats.requests.total = allRequests.length;
 
     // Recent activity (last 30 days)
-    const recentDonations = await executeQuery(`
-      SELECT COUNT(*) as count 
-      FROM donations 
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-    `);
-    
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const recentDonationsCount = await countDocuments('donations', { created_at: { $gte: thirtyDaysAgo } });
+
     stats.recentActivity = {
-      donations: recentDonations[0].count
+      donations: recentDonationsCount
     };
 
     res.json(stats);
@@ -73,11 +52,7 @@ router.get('/stats', authenticateToken, requireRole(['admin']), async (req, res)
 // Get all users
 router.get('/users', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
-    const users = await executeQuery(`
-      SELECT id, name, email, role, phone, city, state, created_at
-      FROM users
-      ORDER BY created_at DESC
-    `);
+    const users = await find('users', {}, { sort: { created_at: -1 } });
 
     res.json(users);
 
@@ -90,14 +65,20 @@ router.get('/users', authenticateToken, requireRole(['admin']), async (req, res)
 // Get all donations (admin view)
 router.get('/donations', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
-    const donations = await executeQuery(`
-      SELECT d.*, u.name as donor_name, u.email as donor_email, u.phone as donor_phone
-      FROM donations d
-      JOIN users u ON d.donor_id = u.id
-      ORDER BY d.created_at DESC
-    `);
+    const donations = await find('donations', {}, { sort: { created_at: -1 } });
 
-    res.json(donations);
+    // Enrich with donor info
+    const enrichedDonations = await Promise.all(donations.map(async (donation) => {
+      const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
+      return {
+        ...donation,
+        donor_name: donor?.name,
+        donor_email: donor?.email,
+        donor_phone: donor?.phone
+      };
+    }));
+
+    res.json(enrichedDonations);
 
   } catch (error) {
     console.error('Error fetching donations:', error);
@@ -108,18 +89,25 @@ router.get('/donations', authenticateToken, requireRole(['admin']), async (req, 
 // Get all requests (admin view)
 router.get('/requests', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
-    const requests = await executeQuery(`
-      SELECT r.*, d.title as donation_title, d.food_type,
-             donor.name as donor_name, donor.email as donor_email,
-             receiver.name as receiver_name, receiver.email as receiver_email
-      FROM requests r
-      JOIN donations d ON r.donation_id = d.id
-      JOIN users donor ON d.donor_id = donor.id
-      JOIN users receiver ON r.receiver_id = receiver.id
-      ORDER BY r.requested_at DESC
-    `);
+    const requests = await find('requests', {}, { sort: { requested_at: -1 } });
 
-    res.json(requests);
+    // Enrich with donation and user info
+    const enrichedRequests = await Promise.all(requests.map(async (request) => {
+      const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
+      const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
+      const receiver = await findOne('users', { _id: toObjectId(request.receiver_id) });
+      return {
+        ...request,
+        donation_title: donation?.title,
+        food_type: donation?.food_type,
+        donor_name: donor?.name,
+        donor_email: donor?.email,
+        receiver_name: receiver?.name,
+        receiver_email: receiver?.email
+      };
+    }));
+
+    res.json(enrichedRequests);
 
   } catch (error) {
     console.error('Error fetching requests:', error);
@@ -131,13 +119,13 @@ router.get('/requests', authenticateToken, requireRole(['admin']), async (req, r
 router.put('/users/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const { role } = req.body;
-    const userId = req.params.id;
+    const userId = toObjectId(req.params.id);
 
     if (!['donor', 'receiver', 'admin'].includes(role)) {
       return res.status(400).json({ message: 'Invalid role' });
     }
 
-    await executeQuery('UPDATE users SET role = ? WHERE id = ?', [role, userId]);
+    await updateOne('users', { _id: userId }, { role });
 
     res.json({ message: 'User updated successfully' });
 
@@ -150,9 +138,9 @@ router.put('/users/:id', authenticateToken, requireRole(['admin']), async (req, 
 // Delete donation (admin)
 router.delete('/donations/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
-    const donationId = req.params.id;
+    const donationId = toObjectId(req.params.id);
 
-    await executeQuery('DELETE FROM donations WHERE id = ?', [donationId]);
+    await deleteOne('donations', { _id: donationId });
 
     res.json({ message: 'Donation deleted successfully' });
 

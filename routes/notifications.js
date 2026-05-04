@@ -1,5 +1,5 @@
 const express = require('express');
-const { executeQuery } = require('../config/database');
+const { find, findOne, updateOne, countDocuments, toObjectId } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
@@ -7,11 +7,7 @@ const router = express.Router();
 // Get user notifications
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const notifications = await executeQuery(`
-      SELECT * FROM notifications 
-      WHERE user_id = ? 
-      ORDER BY created_at DESC
-    `, [req.user.id]);
+    const notifications = await find('notifications', { user_id: req.user.id }, { sort: { created_at: -1 } });
 
     res.json(notifications);
 
@@ -27,13 +23,13 @@ router.put('/:id/read', authenticateToken, async (req, res) => {
     const notificationId = req.params.id;
 
     // Verify notification belongs to user
-    const notifications = await executeQuery('SELECT * FROM notifications WHERE id = ? AND user_id = ?', [notificationId, req.user.id]);
-    
-    if (notifications.length === 0) {
+    const notification = await findOne('notifications', { _id: toObjectId(notificationId), user_id: req.user.id });
+
+    if (!notification) {
       return res.status(404).json({ message: 'Notification not found' });
     }
 
-    await executeQuery('UPDATE notifications SET is_read = TRUE WHERE id = ?', [notificationId]);
+    await updateOne('notifications', { _id: toObjectId(notificationId) }, { is_read: true });
 
     res.json({ message: 'Notification marked as read' });
 
@@ -46,7 +42,7 @@ router.put('/:id/read', authenticateToken, async (req, res) => {
 // Mark all notifications as read
 router.put('/read-all', authenticateToken, async (req, res) => {
   try {
-    await executeQuery('UPDATE notifications SET is_read = TRUE WHERE user_id = ?', [req.user.id]);
+    await updateOne('notifications', { user_id: req.user.id }, { is_read: true });
 
     res.json({ message: 'All notifications marked as read' });
 
@@ -59,12 +55,9 @@ router.put('/read-all', authenticateToken, async (req, res) => {
 // Get unread notification count
 router.get('/unread-count', authenticateToken, async (req, res) => {
   try {
-    const result = await executeQuery(`
-      SELECT COUNT(*) as count FROM notifications 
-      WHERE user_id = ? AND is_read = FALSE
-    `, [req.user.id]);
+    const count = await countDocuments('notifications', { user_id: req.user.id, is_read: false });
 
-    res.json({ count: result[0].count });
+    res.json({ count });
 
   } catch (error) {
     console.error('Error fetching unread count:', error);

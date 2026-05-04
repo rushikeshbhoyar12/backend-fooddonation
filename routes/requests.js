@@ -1,5 +1,5 @@
 const express = require('express');
-const { executeQuery } = require('../config/database');
+const { find, findOne, insertOne, updateOne, countDocuments, toObjectId } = require('../config/database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -15,40 +15,41 @@ router.post('/', authenticateToken, requireRole(['receiver']), async (req, res) 
     }
 
     // Check if donation exists and is available
-    const donations = await executeQuery('SELECT * FROM donations WHERE id = ? AND status = "available"', [donationId]);
+    const donation = await findOne('donations', { _id: toObjectId(donationId), status: 'available' });
 
-    if (donations.length === 0) {
+    if (!donation) {
       return res.status(404).json({ message: 'Donation not found or not available' });
     }
 
     // Check if user already requested this donation
-    const existingRequests = await executeQuery('SELECT * FROM requests WHERE donation_id = ? AND receiver_id = ?', [donationId, receiverId]);
+    const existingRequest = await findOne('requests', { donation_id: donationId, receiver_id: receiverId });
 
-    if (existingRequests.length > 0) {
+    if (existingRequest) {
       return res.status(400).json({ message: 'You have already requested this donation' });
     }
 
     // Create request
-    const result = await executeQuery(`
-      INSERT INTO requests (donation_id, receiver_id, message)
-      VALUES (?, ?, ?)
-    `, [donationId, receiverId, message || null]);
+    const result = await insertOne('requests', {
+      donation_id: donationId,
+      receiver_id: receiverId,
+      message: message || null,
+      status: 'pending',
+      requested_at: new Date()
+    });
 
     // Create notification for donor
-    const donation = donations[0];
-    await executeQuery(`
-      INSERT INTO notifications (user_id, title, message, type)
-      VALUES (?, ?, ?, ?)
-    `, [
-      donation.donor_id,
-      'New Donation Request',
-      `${req.user.name} has requested your donation: "${donation.title}"`,
-      'request'
-    ]);
+    await insertOne('notifications', {
+      user_id: donation.donor_id,
+      title: 'New Donation Request',
+      message: `${req.user.name} has requested your donation: "${donation.title}"`,
+      type: 'request',
+      is_read: false,
+      created_at: new Date()
+    });
 
     res.status(201).json({
       message: 'Request submitted successfully',
-      requestId: result.insertId
+      requestId: result.insertedId.toString()
     });
 
   } catch (error) {
@@ -60,17 +61,25 @@ router.post('/', authenticateToken, requireRole(['receiver']), async (req, res) 
 // Get user's requests (receivers)
 router.get('/my-requests', authenticateToken, requireRole(['receiver']), async (req, res) => {
   try {
-    const requests = await executeQuery(`
-      SELECT r.*, d.title, d.food_type, d.quantity, d.pickup_location, d.status as donation_status,
-             u.name as donor_name, u.phone as donor_phone
-      FROM requests r
-      JOIN donations d ON r.donation_id = d.id
-      JOIN users u ON d.donor_id = u.id
-      WHERE r.receiver_id = ?
-      ORDER BY r.requested_at DESC
-    `, [req.user.id]);
+    const requests = await find('requests', { receiver_id: req.user.id }, { sort: { requested_at: -1 } });
 
-    res.json(requests);
+    // Enrich requests with donation and donor info
+    const enrichedRequests = await Promise.all(requests.map(async (request) => {
+      const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
+      const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
+      return {
+        ...request,
+        title: donation?.title,
+        food_type: donation?.food_type,
+        quantity: donation?.quantity,
+        pickup_location: donation?.pickup_location,
+        donation_status: donation?.status,
+        donor_name: donor?.name,
+        donor_phone: donor?.phone
+      };
+    }));
+
+    res.json(enrichedRequests);
 
   } catch (error) {
     console.error('Error fetching requests:', error);
@@ -81,17 +90,27 @@ router.get('/my-requests', authenticateToken, requireRole(['receiver']), async (
 // Get requests for donor's donations
 router.get('/for-my-donations', authenticateToken, requireRole(['donor']), async (req, res) => {
   try {
-    const requests = await executeQuery(`
-      SELECT r.*, d.title, d.food_type, d.quantity,
-             u.name as receiver_name, u.phone as receiver_phone, u.email as receiver_email
-      FROM requests r
-      JOIN donations d ON r.donation_id = d.id
-      JOIN users u ON r.receiver_id = u.id
-      WHERE d.donor_id = ?
-      ORDER BY r.requested_at DESC
-    `, [req.user.id]);
+    const donations = await find('donations', { donor_id: req.user.id });
+    const donationIds = donations.map(d => d._id.toString());
 
-    res.json(requests);
+    const requests = await find('requests', { donation_id: { $in: donationIds } }, { sort: { requested_at: -1 } });
+
+    // Enrich requests with donation and receiver info
+    const enrichedRequests = await Promise.all(requests.map(async (request) => {
+      const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
+      const receiver = await findOne('users', { _id: toObjectId(request.receiver_id) });
+      return {
+        ...request,
+        title: donation?.title,
+        food_type: donation?.food_type,
+        quantity: donation?.quantity,
+        receiver_name: receiver?.name,
+        receiver_phone: receiver?.phone,
+        receiver_email: receiver?.email
+      };
+    }));
+
+    res.json(enrichedRequests);
 
   } catch (error) {
     console.error('Error fetching donation requests:', error);
@@ -110,37 +129,53 @@ router.put('/:id/status', authenticateToken, requireRole(['donor']), async (req,
     }
 
     // Check if request exists and belongs to donor's donation
-    const requests = await executeQuery(`
-      SELECT r.*, d.donor_id, d.title, u.name as receiver_name
-      FROM requests r
-      JOIN donations d ON r.donation_id = d.id
-      JOIN users u ON r.receiver_id = u.id
-      WHERE r.id = ? AND d.donor_id = ?
-    `, [requestId, req.user.id]);
+    const request = await findOne('requests', { _id: toObjectId(requestId) });
 
-    if (requests.length === 0) {
+    if (!request) {
       return res.status(404).json({ message: 'Request not found or not authorized' });
     }
 
-    const request = requests[0];
+    const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
+    const receiver = await findOne('users', { _id: toObjectId(request.receiver_id) });
+
+    if (!donation || donation.donor_id !== req.user.id) {
+      return res.status(404).json({ message: 'Request not found or not authorized' });
+    }
 
     // Update request status
-    await executeQuery('UPDATE requests SET status = ? WHERE id = ?', [status, requestId]);
+    await updateOne('requests',
+      { _id: toObjectId(requestId) },
+      { status, updated_at: new Date() }
+    );
 
     // If accepted, update donation status to reserved
     if (status === 'accepted') {
-      await executeQuery('UPDATE donations SET status = ? WHERE id = ?', ['reserved', request.donation_id]);
+      await updateOne('donations',
+        { _id: toObjectId(request.donation_id) },
+        { status: 'reserved', updated_at: new Date() }
+      );
 
       // Reject other pending requests for this donation
-      await executeQuery(`
-        UPDATE requests SET status = 'rejected' 
-        WHERE donation_id = ? AND id != ? AND status = 'pending'
-      `, [request.donation_id, requestId]);
+      const otherRequests = await find('requests', {
+        donation_id: request.donation_id,
+        _id: { $ne: toObjectId(requestId) },
+        status: 'pending'
+      });
+
+      for (const otherReq of otherRequests) {
+        await updateOne('requests',
+          { _id: otherReq._id },
+          { status: 'rejected', updated_at: new Date() }
+        );
+      }
     }
 
     // If completed, update donation status to completed
     if (status === 'completed') {
-      await executeQuery('UPDATE donations SET status = ? WHERE id = ?', ['completed', request.donation_id]);
+      await updateOne('donations',
+        { _id: toObjectId(request.donation_id) },
+        { status: 'completed', updated_at: new Date() }
+      );
     }
 
     // Create notification for receiver
@@ -158,10 +193,14 @@ router.put('/:id/status', authenticateToken, requireRole(['donor']), async (req,
       notificationType = 'completion';
     }
 
-    await executeQuery(`
-      INSERT INTO notifications (user_id, title, message, type)
-      VALUES (?, ?, ?, ?)
-    `, [request.receiver_id, `Request ${status.charAt(0).toUpperCase() + status.slice(1)}`, notificationMessage, notificationType]);
+    await insertOne('notifications', {
+      user_id: request.receiver_id,
+      title: `Request ${status.charAt(0).toUpperCase() + status.slice(1)}`,
+      message: notificationMessage,
+      type: notificationType,
+      is_read: false,
+      created_at: new Date()
+    });
 
     res.json({ message: 'Request status updated successfully' });
 
@@ -177,22 +216,29 @@ router.get('/donation/:donationId', authenticateToken, requireRole(['donor']), a
     const donationId = req.params.donationId;
 
     // Verify donation belongs to the donor
-    const donations = await executeQuery('SELECT * FROM donations WHERE id = ? AND donor_id = ?', [donationId, req.user.id]);
+    const donation = await findOne('donations', { _id: toObjectId(donationId), donor_id: req.user.id });
 
-    if (donations.length === 0) {
+    if (!donation) {
       return res.status(404).json({ message: 'Donation not found or not authorized' });
     }
 
-    const requests = await executeQuery(`
-      SELECT r.*, u.name as receiver_name, u.phone as receiver_phone, u.email as receiver_email,
-             u.address, u.city, u.state
-      FROM requests r
-      JOIN users u ON r.receiver_id = u.id
-      WHERE r.donation_id = ?
-      ORDER BY r.requested_at DESC
-    `, [donationId]);
+    const requests = await find('requests', { donation_id: donationId }, { sort: { requested_at: -1 } });
 
-    res.json(requests);
+    // Enrich requests with receiver info
+    const enrichedRequests = await Promise.all(requests.map(async (request) => {
+      const receiver = await findOne('users', { _id: toObjectId(request.receiver_id) });
+      return {
+        ...request,
+        receiver_name: receiver?.name,
+        receiver_phone: receiver?.phone,
+        receiver_email: receiver?.email,
+        address: receiver?.address,
+        city: receiver?.city,
+        state: receiver?.state
+      };
+    }));
+
+    res.json(enrichedRequests);
 
   } catch (error) {
     console.error('Error fetching donation requests:', error);
@@ -206,36 +252,36 @@ router.put('/:id/complete', authenticateToken, requireRole(['receiver']), async 
     const requestId = req.params.id;
 
     // Check if request exists and belongs to the receiver and is accepted
-    const requests = await executeQuery(`
-      SELECT r.*, d.title, d.donor_id, u.name as donor_name
-      FROM requests r
-      JOIN donations d ON r.donation_id = d.id
-      JOIN users u ON d.donor_id = u.id
-      WHERE r.id = ? AND r.receiver_id = ? AND r.status = 'accepted'
-    `, [requestId, req.user.id]);
+    const request = await findOne('requests', { _id: toObjectId(requestId), receiver_id: req.user.id, status: 'accepted' });
 
-    if (requests.length === 0) {
+    if (!request) {
       return res.status(404).json({ message: 'Request not found, not authorized, or not accepted' });
     }
 
-    const request = requests[0];
+    const donation = await findOne('donations', { _id: toObjectId(request.donation_id) });
+    const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
 
     // Update request status to completed
-    await executeQuery('UPDATE requests SET status = ? WHERE id = ?', ['completed', requestId]);
+    await updateOne('requests',
+      { _id: toObjectId(requestId) },
+      { status: 'completed', updated_at: new Date() }
+    );
 
     // Update donation status to completed
-    await executeQuery('UPDATE donations SET status = ? WHERE id = ?', ['completed', request.donation_id]);
+    await updateOne('donations',
+      { _id: toObjectId(request.donation_id) },
+      { status: 'completed', updated_at: new Date() }
+    );
 
     // Create notification for donor
-    await executeQuery(`
-      INSERT INTO notifications (user_id, title, message, type)
-      VALUES (?, ?, ?, ?)
-    `, [
-      request.donor_id,
-      'Donation Completed',
-      `${req.user.name} has confirmed pickup completion for "${request.title}". Thank you for your donation!`,
-      'completion'
-    ]);
+    await insertOne('notifications', {
+      user_id: donation.donor_id,
+      title: 'Donation Completed',
+      message: `${req.user.name} has confirmed pickup completion for "${donation.title}". Thank you for your donation!`,
+      type: 'completion',
+      is_read: false,
+      created_at: new Date()
+    });
 
     res.json({ message: 'Request marked as completed successfully' });
 
