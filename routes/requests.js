@@ -196,6 +196,17 @@ router.put('/:id/status', authenticateToken, requireRole(['donor']), async (req,
         { _id: toObjectId(request.donation_id) },
         { status: 'completed', updated_at: new Date() }
       );
+
+      // Send notification to donor
+      const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
+      await insertOne('notifications', {
+        user_id: donation.donor_id,
+        title: 'Donation Received',
+        message: `Your donation "${donation.title}" has been received by ${receiver?.name || 'a user'}. Thank you for your generosity!`,
+        type: 'received',
+        is_read: false,
+        created_at: new Date()
+      });
     }
 
     // Create notification for receiver

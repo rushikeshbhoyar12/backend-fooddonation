@@ -10,7 +10,10 @@ router.get('/', async (req, res) => {
     const { status, food_type, city } = req.query;
     const filter = {};
 
-    if (status) {
+    // Only show available and reserved donations (not completed/received)
+    filter.status = { $in: ['available', 'reserved'] };
+
+    if (status && ['available', 'reserved'].includes(status)) {
       filter.status = status;
     }
 
@@ -117,6 +120,22 @@ router.post('/', authenticateToken, requireRole(['donor']), async (req, res) => 
       updated_at: new Date()
     });
 
+    // Get donor info
+    const donor = await findOne('users', { _id: toObjectId(req.userId) });
+
+    // Send notifications to all receivers
+    const receivers = await find('users', { role: 'receiver' });
+    for (const receiver of receivers) {
+      await insertOne('notifications', {
+        user_id: receiver._id.toString(),
+        title: 'New Donation Available',
+        message: `${donor?.name || 'A donor'} has posted a new ${food_type} donation: "${title}"`,
+        type: 'new_donation',
+        is_read: false,
+        created_at: new Date()
+      });
+    }
+
     res.status(201).json({
       message: 'Donation created successfully',
       donationId: result.insertedId.toString()
@@ -184,6 +203,39 @@ router.delete('/:id', authenticateToken, requireRole(['donor']), async (req, res
   } catch (error) {
     console.error('Error deleting donation:', error);
     res.status(500).json({ message: 'Server error deleting donation' });
+  }
+});
+
+// Get received donations for a receiver
+router.get('/received/my-received', authenticateToken, requireRole(['receiver']), async (req, res) => {
+  try {
+    // Get all completed requests for this receiver
+    const completedRequests = await find('requests', { receiver_id: req.userId, status: 'completed' });
+
+    if (completedRequests.length === 0) {
+      return res.json({ donations: [] });
+    }
+
+    // Get all donations for those requests
+    const donationIds = completedRequests.map(r => r.donation_id);
+    const donations = await find('donations', { _id: { $in: donationIds.map(id => toObjectId(id)) } });
+
+    // Enrich with donor info
+    const enrichedDonations = await Promise.all(donations.map(async (donation) => {
+      const donor = await findOne('users', { _id: toObjectId(donation.donor_id) });
+      return {
+        ...donation,
+        donor_name: donor?.name,
+        donor_phone: donor?.phone,
+        donor_city: donor?.city
+      };
+    }));
+
+    res.json({ donations: enrichedDonations });
+
+  } catch (error) {
+    console.error('Error fetching received donations:', error);
+    res.status(500).json({ message: 'Server error fetching received donations' });
   }
 });
 
